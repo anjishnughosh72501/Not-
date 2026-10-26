@@ -231,13 +231,21 @@ class AnnotationScene(QGraphicsScene):
     Retained-mode vector canvas.
     Renders sharp interactive canvas and exports true antialiased images.
     """
-    def __init__(self, bg_image: QImage, parent=None):
+    def __init__(self, bg_image: QImage, scrim_pct: int = 18, parent=None):
         super().__init__(parent)
-        self.bg_image = bg_image
+        self.raw_bg_image = bg_image.copy()  # Pristine un-dimmed capture for saving
         self.setSceneRect(0, 0, bg_image.width(), bg_image.height())
 
-        # Render sharp background capture
-        self.bg_pixmap = QPixmap.fromImage(bg_image)
+        # Render background with subtle dim scrim (default 18% black)
+        # so user can see clearly what they are annotating while desktop is frozen
+        display_img = bg_image.copy()
+        if scrim_pct > 0:
+            alpha = int(255 * (min(40, max(0, scrim_pct)) / 100.0))
+            p = QPainter(display_img)
+            p.fillRect(display_img.rect(), QColor(0, 0, 0, alpha))
+            p.end()
+
+        self.bg_pixmap = QPixmap.fromImage(display_img)
         self.bg_item = self.addPixmap(self.bg_pixmap)
         self.bg_item.setZValue(-1000)
         self.bg_item.setFlag(QGraphicsItem.ItemIsSelectable, False)
@@ -273,7 +281,7 @@ class AnnotationScene(QGraphicsScene):
     def render_wysiwyg_image(self, crop_rect: Optional[QRectF] = None) -> QImage:
         """
         Renders the vector scene directly into a native high-resolution QImage.
-        Guarantees 100% WYSIWYG match between screen display and saved file.
+        Swaps in the pristine un-dimmed raw_bg_image so exports are crystal clear.
         """
         target_rect = crop_rect if crop_rect else self.sceneRect()
         w = int(target_rect.width())
@@ -282,6 +290,10 @@ class AnnotationScene(QGraphicsScene):
         out_img = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
         out_img.fill(Qt.transparent)
 
+        # Temporarily swap bg_item to pristine image for export
+        raw_pix = QPixmap.fromImage(self.raw_bg_image)
+        self.bg_item.setPixmap(raw_pix)
+
         painter = QPainter(out_img)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setRenderHint(QPainter.TextAntialiasing, True)
@@ -289,5 +301,8 @@ class AnnotationScene(QGraphicsScene):
 
         self.render(painter, QRectF(0, 0, w, h), target_rect)
         painter.end()
+
+        # Restore scrim display pixmap
+        self.bg_item.setPixmap(self.bg_pixmap)
 
         return out_img

@@ -255,7 +255,7 @@ class AnnotateOverlayWindow(QWidget):
 
     def __init__(
         self,
-        base_image: Image.Image,
+        base_image: QImage,
         settings_mgr: SettingsManager,
         library_store: LibraryStore,
         target_screen=None,
@@ -264,11 +264,8 @@ class AnnotateOverlayWindow(QWidget):
         super().__init__(parent)
         self.settings_mgr = settings_mgr
         self.library_store = library_store
-        self.base_pil_image = base_image
+        self.base_qimage = base_image
         self.target_screen = target_screen
-
-        # Convert PIL base image to high-res QImage
-        self.base_qimage = self._pil_to_qimage(base_image)
 
         self.setWindowFlags(
             Qt.FramelessWindowHint |
@@ -278,10 +275,8 @@ class AnnotateOverlayWindow(QWidget):
         self.setAttribute(Qt.WA_StaticContents)
         self.setAcceptDrops(True)
 
-        # Explicitly position window to cover the target monitor geometry
         if self.target_screen:
-            geo = self.target_screen.geometry()
-            self.setGeometry(geo)
+            self.setGeometry(self.target_screen.geometry())
         else:
             self.setWindowState(Qt.WindowFullScreen)
 
@@ -300,14 +295,9 @@ class AnnotateOverlayWindow(QWidget):
         self._init_scene_view()
         self._init_overlays()
 
-    def _pil_to_qimage(self, pil_img: Image.Image) -> QImage:
-        rgb = pil_img.convert("RGBA")
-        data = rgb.tobytes("raw", "RGBA")
-        qimg = QImage(data, rgb.width, rgb.height, QImage.Format_RGBA8888)
-        return qimg.copy()
-
     def _init_scene_view(self):
-        self.scene = AnnotationScene(self.base_qimage, self)
+        scrim_pct = self.settings_mgr.get("appearance.scrim_dim", 18)
+        self.scene = AnnotationScene(self.base_qimage, scrim_pct=scrim_pct, parent=self)
         self.view = QGraphicsView(self.scene, self)
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -315,8 +305,7 @@ class AnnotateOverlayWindow(QWidget):
         self.view.setRenderHint(QPainter.SmoothPixmapTransform, True)
         self.view.setFrameShape(QFrame.NoFrame)
 
-        # Ensure the view scales correctly to logical coordinates of this monitor
-        # so physical pixels match logical view bounds
+        # Match scene rect to view geometry
         self.view.fitInView(self.scene.sceneRect(), Qt.IgnoreAspectRatio)
 
         layout = QVBoxLayout(self)
@@ -360,7 +349,9 @@ class AnnotateOverlayWindow(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        # Match view to scene on resize
         if hasattr(self, "view") and hasattr(self, "scene"):
+            self.view.setSceneRect(self.scene.sceneRect())
             self.view.fitInView(self.scene.sceneRect(), Qt.IgnoreAspectRatio)
         self._reposition_overlays()
 
@@ -368,6 +359,9 @@ class AnnotateOverlayWindow(QWidget):
         super().showEvent(event)
         if self.target_screen:
             self.setGeometry(self.target_screen.geometry())
+        if hasattr(self, "view") and hasattr(self, "scene"):
+            self.view.setSceneRect(self.scene.sceneRect())
+            self.view.fitInView(self.scene.sceneRect(), Qt.IgnoreAspectRatio)
         self._reposition_overlays()
 
     def _on_tool_changed(self, tool_id: str):

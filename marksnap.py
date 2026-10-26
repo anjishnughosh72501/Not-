@@ -42,31 +42,12 @@ def main():
         from PySide6.QtGui import QCursor, QGuiApplication
         cursor_pos = QCursor.pos()
         target_screen = QGuiApplication.screenAt(cursor_pos) or QGuiApplication.primaryScreen()
-        screen_geo = target_screen.geometry()
-        dpr = target_screen.devicePixelRatio()
 
-        with mss.mss() as sct:
-            matched_monitor = None
-            for m in sct.monitors[1:]:
-                phys_x = int(screen_geo.x() * dpr)
-                phys_y = int(screen_geo.y() * dpr)
-                if abs(m["left"] - phys_x) < 50 and abs(m["top"] - phys_y) < 50:
-                    matched_monitor = m
-                    break
-
-            if not matched_monitor:
-                matched_monitor = {
-                    "left": int(screen_geo.x() * dpr),
-                    "top": int(screen_geo.y() * dpr),
-                    "width": int(screen_geo.width() * dpr),
-                    "height": int(screen_geo.height() * dpr)
-                }
-
-            sct_img = sct.grab(matched_monitor)
-            base_img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+        pix = target_screen.grabWindow(0)
+        base_qimage = pix.toImage()
 
         overlay = AnnotateOverlayWindow(
-            base_image=base_img,
+            base_image=base_qimage,
             settings_mgr=settings_mgr,
             library_store=library_store,
             target_screen=target_screen
