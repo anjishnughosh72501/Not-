@@ -39,18 +39,38 @@ def main():
     library_store = LibraryStore()
 
     if args.once:
-        import ctypes
-        u32 = ctypes.windll.user32
-        vx = u32.GetSystemMetrics(76)
-        vy = u32.GetSystemMetrics(77)
-        vw = u32.GetSystemMetrics(78)
-        vh = u32.GetSystemMetrics(79)
+        from PySide6.QtGui import QCursor, QGuiApplication
+        cursor_pos = QCursor.pos()
+        target_screen = QGuiApplication.screenAt(cursor_pos) or QGuiApplication.primaryScreen()
+        screen_geo = target_screen.geometry()
+        dpr = target_screen.devicePixelRatio()
 
         with mss.mss() as sct:
-            sct_img = sct.grab({"left": vx, "top": vy, "width": vw, "height": vh})
+            matched_monitor = None
+            for m in sct.monitors[1:]:
+                phys_x = int(screen_geo.x() * dpr)
+                phys_y = int(screen_geo.y() * dpr)
+                if abs(m["left"] - phys_x) < 50 and abs(m["top"] - phys_y) < 50:
+                    matched_monitor = m
+                    break
+
+            if not matched_monitor:
+                matched_monitor = {
+                    "left": int(screen_geo.x() * dpr),
+                    "top": int(screen_geo.y() * dpr),
+                    "width": int(screen_geo.width() * dpr),
+                    "height": int(screen_geo.height() * dpr)
+                }
+
+            sct_img = sct.grab(matched_monitor)
             base_img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
 
-        overlay = AnnotateOverlayWindow(base_img, settings_mgr, library_store)
+        overlay = AnnotateOverlayWindow(
+            base_image=base_img,
+            settings_mgr=settings_mgr,
+            library_store=library_store,
+            target_screen=target_screen
+        )
         overlay.closed.connect(lambda saved: app.quit())
         overlay.show()
     else:

@@ -258,12 +258,14 @@ class AnnotateOverlayWindow(QWidget):
         base_image: Image.Image,
         settings_mgr: SettingsManager,
         library_store: LibraryStore,
+        target_screen=None,
         parent=None
     ):
         super().__init__(parent)
         self.settings_mgr = settings_mgr
         self.library_store = library_store
         self.base_pil_image = base_image
+        self.target_screen = target_screen
 
         # Convert PIL base image to high-res QImage
         self.base_qimage = self._pil_to_qimage(base_image)
@@ -273,8 +275,15 @@ class AnnotateOverlayWindow(QWidget):
             Qt.WindowStaysOnTopHint |
             Qt.BypassWindowManagerHint
         )
-        self.setWindowState(Qt.WindowFullScreen)
+        self.setAttribute(Qt.WA_StaticContents)
         self.setAcceptDrops(True)
+
+        # Explicitly position window to cover the target monitor geometry
+        if self.target_screen:
+            geo = self.target_screen.geometry()
+            self.setGeometry(geo)
+        else:
+            self.setWindowState(Qt.WindowFullScreen)
 
         # State
         self.current_tool = "pen"
@@ -306,6 +315,10 @@ class AnnotateOverlayWindow(QWidget):
         self.view.setRenderHint(QPainter.SmoothPixmapTransform, True)
         self.view.setFrameShape(QFrame.NoFrame)
 
+        # Ensure the view scales correctly to logical coordinates of this monitor
+        # so physical pixels match logical view bounds
+        self.view.fitInView(self.scene.sceneRect(), Qt.IgnoreAspectRatio)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.view)
@@ -315,7 +328,6 @@ class AnnotateOverlayWindow(QWidget):
         if self.settings_mgr.get("appearance.show_hints", True):
             self.mode_pill = ModePill(self)
             self.mode_pill.adjustSize()
-            self.mode_pill.move((self.width() - self.mode_pill.width()) // 2, 16)
 
         # 2. Floating Toolbar
         self.toolbar = FloatingToolbar(
@@ -326,14 +338,37 @@ class AnnotateOverlayWindow(QWidget):
         self.toolbar.tool_changed.connect(self._on_tool_changed)
         self.toolbar.action_triggered.connect(self._on_toolbar_action)
         self.toolbar.adjustSize()
-        self.toolbar.move((self.width() - self.toolbar.width()) // 2, 60)
+
+        # Initial layout positioning
+        self._reposition_overlays()
+
+    def _reposition_overlays(self):
+        """Always centers ModePill and FloatingToolbar horizontally on this monitor."""
+        win_w = self.width() if self.width() > 0 else (self.target_screen.geometry().width() if self.target_screen else 1920)
+
+        if hasattr(self, "mode_pill"):
+            self.mode_pill.adjustSize()
+            pill_x = max(10, (win_w - self.mode_pill.width()) // 2)
+            self.mode_pill.move(pill_x, 16)
+            self.mode_pill.raise_()
+
+        if hasattr(self, "toolbar"):
+            self.toolbar.adjustSize()
+            bar_x = max(10, (win_w - self.toolbar.width()) // 2)
+            self.toolbar.move(bar_x, 60)
+            self.toolbar.raise_()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if hasattr(self, "mode_pill"):
-            self.mode_pill.move((self.width() - self.mode_pill.width()) // 2, 16)
-        if hasattr(self, "toolbar"):
-            self.toolbar.move((self.width() - self.toolbar.width()) // 2, 60)
+        if hasattr(self, "view") and hasattr(self, "scene"):
+            self.view.fitInView(self.scene.sceneRect(), Qt.IgnoreAspectRatio)
+        self._reposition_overlays()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.target_screen:
+            self.setGeometry(self.target_screen.geometry())
+        self._reposition_overlays()
 
     def _on_tool_changed(self, tool_id: str):
         self.current_tool = tool_id

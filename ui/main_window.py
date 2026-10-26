@@ -259,7 +259,7 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def trigger_annotate_mode(self):
-        """Freezes screen and opens the premium PySide6 Annotation overlay instantly."""
+        """Freezes screen on the active monitor containing the cursor and opens the annotation overlay centered."""
         if self.active_overlay and self.active_overlay.isVisible():
             return
         if self.settings_mgr.get("general.paused", False):
@@ -269,22 +269,42 @@ class MainWindow(QMainWindow):
         if hasattr(self, "launcher_btn"):
             self.launcher_btn.set_annotating_state(True)
 
-        # Grab virtual desktop
-        import ctypes
-        u32 = ctypes.windll.user32
-        vx = u32.GetSystemMetrics(76)
-        vy = u32.GetSystemMetrics(77)
-        vw = u32.GetSystemMetrics(78)
-        vh = u32.GetSystemMetrics(79)
+        # Detect the screen containing user's cursor
+        from PySide6.QtGui import QCursor, QGuiApplication
+        cursor_pos = QCursor.pos()
+        target_screen = QGuiApplication.screenAt(cursor_pos) or QGuiApplication.primaryScreen()
+        screen_geo = target_screen.geometry()
+        dpr = target_screen.devicePixelRatio()
 
+        # Capture target monitor with mss matching its physical coordinates
         with mss.mss() as sct:
-            sct_img = sct.grab({"left": vx, "top": vy, "width": vw, "height": vh})
+            matched_monitor = None
+            # Find the monitor entry that best matches this screen
+            for m in sct.monitors[1:]:
+                # Check overlap between screen_geo (scaled to physical) and monitor bbox
+                phys_x = int(screen_geo.x() * dpr)
+                phys_y = int(screen_geo.y() * dpr)
+                if abs(m["left"] - phys_x) < 50 and abs(m["top"] - phys_y) < 50:
+                    matched_monitor = m
+                    break
+
+            if not matched_monitor:
+                # Fallback to physical bounds calculated from screen_geo
+                matched_monitor = {
+                    "left": int(screen_geo.x() * dpr),
+                    "top": int(screen_geo.y() * dpr),
+                    "width": int(screen_geo.width() * dpr),
+                    "height": int(screen_geo.height() * dpr)
+                }
+
+            sct_img = sct.grab(matched_monitor)
             base_img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
 
         self.active_overlay = AnnotateOverlayWindow(
             base_image=base_img,
             settings_mgr=self.settings_mgr,
-            library_store=self.library_store
+            library_store=self.library_store,
+            target_screen=target_screen
         )
         self.active_overlay.closed.connect(self._on_overlay_closed)
         self.active_overlay.show()
