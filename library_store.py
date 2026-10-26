@@ -1,10 +1,5 @@
 """
-library_store.py - Index management and search for MarkSnap captures.
-
-Maintains library.json:
-- Captures metadata: id, filename, filepath, type, timestamp, ocr_text, tags, thumbnail_path
-- Rebuild index to synchronize folder state
-- Instant text/tag/type search
+library_store.py - Single-writer capture index and thumbnail caching for MarkSnap.
 """
 
 from __future__ import annotations
@@ -14,10 +9,10 @@ import uuid
 import tempfile
 import threading
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 from PIL import Image
 
-THUMBNAIL_SIZE = (240, 160)
+THUMBNAIL_SIZE = (280, 180)
 
 
 def get_default_library_path() -> str:
@@ -37,7 +32,23 @@ class LibraryStore:
         self.filepath = filepath or get_default_library_path()
         self.thumbs_dir = get_thumbnails_dir()
         self._lock = threading.Lock()
+        self._listeners: List[Callable[[], None]] = []
         self.items: List[Dict[str, Any]] = self._load()
+
+    def add_listener(self, callback: Callable[[], None]) -> None:
+        self._listeners.append(callback)
+
+    def _notify(self) -> None:
+        for cb in self._listeners:
+            try:
+                cb()
+            except Exception as e:
+                print(f"[LibraryStore] Listener error: {e}")
+
+    def reload(self) -> None:
+        with self._lock:
+            self.items = self._load()
+        self._notify()
 
     def _load(self) -> List[Dict[str, Any]]:
         if os.path.exists(self.filepath):
@@ -55,6 +66,7 @@ class LibraryStore:
             json.dump(self.items, tf, indent=2)
             temp_name = tf.name
         os.replace(temp_name, self.filepath)
+        self._notify()
 
     def generate_thumbnail(self, image_path: str, item_id: str) -> Optional[str]:
         if not os.path.exists(image_path):
@@ -64,7 +76,6 @@ class LibraryStore:
             with Image.open(image_path) as img:
                 img_copy = img.copy()
                 img_copy.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
-                # Convert RGBA to RGB for JPEG thumb
                 if img_copy.mode in ("RGBA", "P"):
                     img_copy = img_copy.convert("RGB")
                 img_copy.save(thumb_path, "JPEG", quality=85)
@@ -98,7 +109,6 @@ class LibraryStore:
                 "tags": tags or [],
                 "thumbnail_path": thumb_path
             }
-            # Insert newest first
             self.items.insert(0, entry)
             self._save_atomic()
             return entry
@@ -150,17 +160,14 @@ class LibraryStore:
             tag_filter = tag.strip().lower()
 
             for item in self.items:
-                # Gesture filter
                 if gesture_type != "all" and item.get("type", "").lower() != gesture_type.lower():
                     continue
 
-                # Tag filter
                 if tag_filter:
                     item_tags = [t.lower() for t in item.get("tags", [])]
                     if tag_filter not in item_tags:
                         continue
 
-                # Date filter
                 if date_from or date_to:
                     try:
                         ts = datetime.fromisoformat(item["timestamp"])
@@ -171,7 +178,6 @@ class LibraryStore:
                     except Exception:
                         pass
 
-                # Query filter (matches filename, tags, or OCR text)
                 if q:
                     filename_match = q in item.get("filename", "").lower()
                     ocr_match = q in item.get("ocr_text", "").lower()
@@ -183,21 +189,15 @@ class LibraryStore:
             return results
 
     def rebuild_index(self, save_folder: str) -> int:
-        """
-        Scans save_folder, adds any unindexed image files, removes missing ones,
-        and regenerates thumbnails. Returns the count of active indexed items.
-        """
         with self._lock:
             if not os.path.exists(save_folder):
                 self.items = []
                 self._save_atomic()
                 return 0
 
-            # Existing paths mapped by normalized abspath
             existing_by_path = {os.path.normpath(item["filepath"]): item for item in self.items}
             new_items: List[Dict[str, Any]] = []
 
-            # Scan directory for image files
             valid_exts = {".png", ".jpg", ".jpeg"}
             for root, _, files in os.walk(save_folder):
                 for f in files:
@@ -206,15 +206,12 @@ class LibraryStore:
                         full_p = os.path.normpath(os.path.join(root, f))
                         if full_p in existing_by_path:
                             entry = existing_by_path[full_p]
-                            # Check thumbnail existence
                             if not entry.get("thumbnail_path") or not os.path.exists(entry["thumbnail_path"]):
                                 entry["thumbnail_path"] = self.generate_thumbnail(full_p, entry["id"]) or ""
                             new_items.append(entry)
                         else:
-                            # Brand new item found on disk
                             stat = os.stat(full_p)
                             item_id = str(uuid.uuid4())
-                            # Infer gesture type from prefix if present
                             lower_f = f.lower()
                             c_type = "manual"
                             for prefix in ("box", "circle", "underline", "arrow"):
@@ -236,7 +233,6 @@ class LibraryStore:
                             }
                             new_items.append(entry)
 
-            # Sort newest first by timestamp
             new_items.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
             self.items = new_items
             self._save_atomic()

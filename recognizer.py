@@ -73,7 +73,18 @@ def classify(points: List[Point], sensitivity: int = 50) -> Dict[str, Any]:
     is_closed = (closure_ratio < closure_limit) or (closure_dist < 55.0 and closure_dist / diagonal < closure_limit)
 
     if is_closed:
-        box_tolerance = max(8.0, (0.12 + 0.04 * sens_factor) * min(w, h))
+        # Distinguish Box vs Circle:
+        # A circle has uniform radius from its center (low radial coefficient of variation).
+        # A box has points extending much further into its 4 corners (high radial CV ~ 0.12+).
+        # Also check point proximity to the 4 bounding box edges.
+        cent_x = sum(p[0] for p in points) / len(points)
+        cent_y = sum(p[1] for p in points) / len(points)
+        radii = [math.hypot(p[0] - cent_x, p[1] - cent_y) for p in points]
+        mean_r = max(1.0, sum(radii) / len(radii))
+        var_r = sum((r - mean_r) ** 2 for r in radii) / len(radii)
+        radial_cv = math.sqrt(var_r) / mean_r
+
+        box_tolerance = max(6.0, (0.08 + 0.03 * sens_factor) * min(w, h))
         near_edge_count = 0
 
         for px, py in points:
@@ -82,10 +93,10 @@ def classify(points: List[Point], sensitivity: int = 50) -> Dict[str, Any]:
             dist_top = abs(py - min_y)
             dist_bottom = abs(py - max_y)
 
-            near_top = dist_top <= box_tolerance and (min_x - box_tolerance <= px <= max_x + box_tolerance)
-            near_bottom = dist_bottom <= box_tolerance and (min_x - box_tolerance <= px <= max_x + box_tolerance)
-            near_left = dist_left <= box_tolerance and (min_y - box_tolerance <= py <= max_y + box_tolerance)
-            near_right = dist_right <= box_tolerance and (min_y - box_tolerance <= py <= max_y + box_tolerance)
+            near_top = dist_top <= box_tolerance and (min_x <= px <= max_x)
+            near_bottom = dist_bottom <= box_tolerance and (min_x <= px <= max_x)
+            near_left = dist_left <= box_tolerance and (min_y <= py <= max_y)
+            near_right = dist_right <= box_tolerance and (min_y <= py <= max_y)
 
             if near_top or near_bottom or near_left or near_right:
                 near_edge_count += 1
@@ -93,13 +104,16 @@ def classify(points: List[Point], sensitivity: int = 50) -> Dict[str, Any]:
         box_ratio = near_edge_count / len(points)
         aspect_ratio = min(w, h) / max(w, h)
 
-        if box_ratio >= box_req_ratio:
+        # High corner/edge concentration and higher radial CV signifies a box
+        # Low radial CV (< 0.065) strongly indicates a circle/ellipse
+        if radial_cv < (0.065 + 0.015 * sens_factor) or box_ratio < (0.80 - 0.10 * sens_factor):
             return {
-                "shape": "box",
+                "shape": "circle",
                 "bbox": bbox,
-                "confidence": min(1.0, box_ratio),
+                "confidence": min(1.0, 1.0 - radial_cv),
                 "metrics": {
                     "is_closed": True,
+                    "radial_cv": radial_cv,
                     "box_ratio": box_ratio,
                     "closure_ratio": closure_ratio,
                     "aspect_ratio": aspect_ratio
@@ -107,11 +121,12 @@ def classify(points: List[Point], sensitivity: int = 50) -> Dict[str, Any]:
             }
         else:
             return {
-                "shape": "circle",
+                "shape": "box",
                 "bbox": bbox,
-                "confidence": min(1.0, 1.0 - box_ratio + 0.3),
+                "confidence": min(1.0, box_ratio),
                 "metrics": {
                     "is_closed": True,
+                    "radial_cv": radial_cv,
                     "box_ratio": box_ratio,
                     "closure_ratio": closure_ratio,
                     "aspect_ratio": aspect_ratio
