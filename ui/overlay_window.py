@@ -305,6 +305,9 @@ class AnnotateOverlayWindow(QWidget):
         self.view.setRenderHint(QPainter.SmoothPixmapTransform, True)
         self.view.setFrameShape(QFrame.NoFrame)
 
+        # Intercept mouse events from QGraphicsView's viewport directly
+        self.view.viewport().installEventFilter(self)
+
         # Match scene rect to view geometry
         self.view.fitInView(self.scene.sceneRect(), Qt.IgnoreAspectRatio)
 
@@ -396,21 +399,40 @@ class AnnotateOverlayWindow(QWidget):
             w = int(action.split(":")[1])
             self.current_stroke_width = w
 
+    def eventFilter(self, obj, event):
+        """Intercepts mouse input on the QGraphicsView viewport so tools and gestures draw reliably."""
+        if hasattr(self, "view") and obj == self.view.viewport():
+            etype = event.type()
+            if etype == QEvent.MouseButtonPress:
+                self.handle_mouse_press(event)
+                if self.is_drawing or event.button() == Qt.RightButton:
+                    return True
+            elif etype == QEvent.MouseMove:
+                self.handle_mouse_move(event)
+                if self.is_drawing or (event.buttons() & Qt.RightButton):
+                    return True
+            elif etype == QEvent.MouseButtonRelease:
+                self.handle_mouse_release(event)
+                return True
+
+        return super().eventFilter(obj, event)
+
     # --- Mouse & Drawing Handlers ---
-    def mousePressEvent(self, event):
+    def handle_mouse_press(self, event):
+        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+
         # Forward to child widgets if clicked inside
-        if self._is_inside_widget(self.toolbar, event.pos()) or (hasattr(self, "mode_pill") and self._is_inside_widget(self.mode_pill, event.pos())):
-            super().mousePressEvent(event)
+        if self._is_inside_widget(self.toolbar, pos) or (hasattr(self, "mode_pill") and self._is_inside_widget(self.mode_pill, pos)):
             return
 
         # Right mouse = shape gesture recognizer
         if event.button() == Qt.RightButton:
-            self.gesture_points = [(float(event.position().x()), float(event.position().y()))]
+            self.gesture_points = [(float(pos.x()), float(pos.y()))]
             return
 
         if event.button() == Qt.LeftButton:
             self.is_drawing = True
-            scene_pos = self.view.mapToScene(event.pos())
+            scene_pos = self.view.mapToScene(pos)
             self.drag_start_pt = scene_pos
 
             if self.current_tool in ("pen", "marker"):
@@ -454,13 +476,15 @@ class AnnotateOverlayWindow(QWidget):
                 self.active_item = RedactionItem(QRectF(scene_pos, scene_pos), mode="pixelate")
                 self.scene.addItem(self.active_item)
 
-    def mouseMoveEvent(self, event):
+    def handle_mouse_move(self, event):
+        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+
         if event.buttons() & Qt.RightButton:
-            self.gesture_points.append((float(event.position().x()), float(event.position().y())))
+            self.gesture_points.append((float(pos.x()), float(pos.y())))
             return
 
         if self.is_drawing and self.active_item:
-            scene_pos = self.view.mapToScene(event.pos())
+            scene_pos = self.view.mapToScene(pos)
             if isinstance(self.active_item, PenStrokeItem):
                 self.active_item.add_point(scene_pos)
             elif isinstance(self.active_item, ArrowItem):
@@ -469,7 +493,7 @@ class AnnotateOverlayWindow(QWidget):
                 rect = QRectF(self.drag_start_pt, scene_pos).normalized()
                 self.active_item.setRect(rect)
 
-    def mouseReleaseEvent(self, event):
+    def handle_mouse_release(self, event):
         if event.button() == Qt.RightButton and len(self.gesture_points) >= 5:
             res = classify(self.gesture_points)
             self.gesture_points = []
@@ -484,6 +508,15 @@ class AnnotateOverlayWindow(QWidget):
             if self.active_item:
                 self.scene.commit_action([self.active_item])
                 self.active_item = None
+
+    def mousePressEvent(self, event):
+        self.handle_mouse_press(event)
+
+    def mouseMoveEvent(self, event):
+        self.handle_mouse_move(event)
+
+    def mouseReleaseEvent(self, event):
+        self.handle_mouse_release(event)
 
     def _handle_gesture(self, shape: str, bbox: Tuple[float, float, float, float]):
         """Dispatches shape gestures safely without disrupting the scene."""
