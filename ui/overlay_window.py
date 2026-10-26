@@ -308,12 +308,24 @@ class AnnotateOverlayWindow(QWidget):
         # Intercept mouse events from QGraphicsView's viewport directly
         self.view.viewport().installEventFilter(self)
 
-        # Match scene rect to view geometry
-        self.view.fitInView(self.scene.sceneRect(), Qt.IgnoreAspectRatio)
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.view)
+
+    def _sync_view_scale(self):
+        """Deterministically scales the view to match monitor dimensions without compounding."""
+        if not hasattr(self, "view") or not hasattr(self, "scene"):
+            return
+        w = self.width()
+        h = self.height()
+        sw = self.scene.sceneRect().width()
+        sh = self.scene.sceneRect().height()
+        if w > 200 and h > 200 and sw > 0 and sh > 0:
+            self.view.setSceneRect(0, 0, sw, sh)
+            sx = w / sw
+            sy = h / sh
+            self.view.resetTransform()
+            self.view.scale(sx, sy)
 
     def _init_overlays(self):
         # 1. Mode Pill
@@ -352,19 +364,14 @@ class AnnotateOverlayWindow(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # Match view to scene on resize
-        if hasattr(self, "view") and hasattr(self, "scene"):
-            self.view.setSceneRect(self.scene.sceneRect())
-            self.view.fitInView(self.scene.sceneRect(), Qt.IgnoreAspectRatio)
+        self._sync_view_scale()
         self._reposition_overlays()
 
     def showEvent(self, event):
         super().showEvent(event)
         if self.target_screen:
             self.setGeometry(self.target_screen.geometry())
-        if hasattr(self, "view") and hasattr(self, "scene"):
-            self.view.setSceneRect(self.scene.sceneRect())
-            self.view.fitInView(self.scene.sceneRect(), Qt.IgnoreAspectRatio)
+        self._sync_view_scale()
         self._reposition_overlays()
 
     def _on_tool_changed(self, tool_id: str):
